@@ -4,6 +4,7 @@
 .clang_complete
 .gcc-flags.json
 .DS_Store
+.vscode
 CMakeListsPrivate.txt
 custom-build-flags/*
 build_flags_due.sh
