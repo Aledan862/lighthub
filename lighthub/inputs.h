@@ -73,6 +73,9 @@ e-mail    anklimov@gmail.com
 //"pin2": { "T":"0", "emit":"/light1", item:"light1", "scmd": "OFF", repcmd:"INCREASE"}
 
 
+
+// TODO многократные нажатия
+
 extern aJsonObject *inputs;
 
 
@@ -115,8 +118,7 @@ public:
     static void onCounterChanged3();
     static void onCounterChanged4();
     static void onCounterChanged5();
-
-
+    
 
 protected:
     void Parse();
