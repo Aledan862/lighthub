@@ -171,6 +171,11 @@ int mqttErrorRate;
 void watchdogSetup(void) {}    //Do not remove - strong re-definition WDT Init for DUE
 #endif
 
+#ifdef CONFIG_IN_FIRM
+#include "firmwareString.h"
+#endif
+
+
 void cleanConf()
 {
   if (!root) return;
@@ -1002,6 +1007,31 @@ int loadConfigFromEEPROM()
     return 0;
 }
 
+
+int loadConfigFromFirmware()
+{
+    debugSerial<<F("Loading Config from Firmware")<<endl;
+
+    if (configJsonString[0] == '{') {
+        
+        cleanConf();
+        // Json string to parse
+        root = aJson.parse(configJsonString);
+        if (!root) {
+            debugSerial<<F("load failed")<<endl;
+            return 0;
+        }
+        debugSerial<<F("Loaded")<<endl;
+        applyConfig();
+        ethClient.stop(); //Refresh MQTT connect to get retained info
+        return 1;
+    } else {
+        debugSerial<<F("No stored config")<<endl;
+        return 0;
+    }
+    return 0;
+}
+
 void cmdFunctionReq(int arg_cnt, char **args) {
     mqttConfigRequest(arg_cnt, args);
   //  restoreState();
@@ -1400,7 +1430,12 @@ void setup_main() {
 #if defined(ARDUINO_ARCH_ESP8266)
       EEPROM.begin(ESP_EEPROM_SIZE);
 #endif
+
+#ifdef CONFIG_IN_FIRM
+    loadConfigFromFirmware();
+#else
     loadConfigFromEEPROM();
+#endif
 
 #ifdef _modbus
     #ifdef CONTROLLINO

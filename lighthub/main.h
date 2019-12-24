@@ -167,6 +167,7 @@
 extern Artnet *artnet;
 #endif
 
+
 enum lan_status {
     INITIAL_STATE = 0,
     HAVE_IP_ADDRESS = 1,
@@ -207,6 +208,8 @@ void applyConfig();
 void cmdFunctionLoad(int arg_cnt, char **args);
 
 int loadConfigFromEEPROM();
+
+int loadConfigFromFirmware();
 
 void cmdFunctionReq(int arg_cnt, char **args);
 
