@@ -67,6 +67,9 @@ PWM Out
 
 #include "main.h"
 
+#if defined(OTA)
+#include <ArduinoOTA.h>
+#endif
 
 #if defined(__SAM3X8E__)
 DueFlashStorage EEPROM;
@@ -306,6 +309,11 @@ lan_status lanLoop() {
             break;
 
         case HAVE_IP_ADDRESS:
+        #ifdef OTA
+        // start the OTEthernet library with internal (flash) based storage
+        ArduinoOTA.begin(Ethernet.localIP(), "Lighthub", "password", InternalStorage);
+        #endif
+
             if (!configOk)
                 lanStatus = loadConfigFromHttp(0, NULL);
             else lanStatus = IP_READY_CONFIG_LOADED_CONNECTING_TO_BROKER;
@@ -313,12 +321,15 @@ lan_status lanLoop() {
 
         case IP_READY_CONFIG_LOADED_CONNECTING_TO_BROKER:
             wdt_res();
+
+
+
             ip_ready_config_loaded_connecting_to_broker();
             break;
 
         case RETAINING_COLLECTING:
             if (millis() > nextLanCheckTime) {
-                char buf[MQTT_TOPIC_LENGTH];
+                char buf[MQTT_TOPIC_LENGTH+1];
 
                 //Unsubscribe from status topics..
                 //strncpy_P(buf, outprefix, sizeof(buf));
@@ -584,7 +595,7 @@ void ip_ready_config_loaded_connecting_to_broker() {
         //    wdt_en();
             configOk = true;
             // ... Temporary subscribe to status topic
-            char buf[MQTT_TOPIC_LENGTH];
+            char buf[MQTT_TOPIC_LENGTH+1];
 
   //          strncpy_P(buf, outprefix, sizeof(buf));
             setTopic(buf,sizeof(buf),T_OUT);
@@ -1552,6 +1563,33 @@ void printFirmwareVersionAndBuildOptions() {
 #else
     debugSerial<<F("\n(-)RESTART_LAN_ON_MQTT_ERRORS");
 #endif
+
+
+#ifdef CSSHDC_DISABLE
+    debugSerial<<F("\n(-)CCS811 & HDC1080");
+#else
+    debugSerial<<F("\n(+)CCS811 & HDC1080");
+#endif
+#ifndef AC_DISABLE
+    debugSerial<<F("\n(+)AC HAIER");
+#else
+    debugSerial<<F("\n(-)AC HAIER");
+#endif
+#ifndef MOTOR_DISABLE
+    debugSerial<<F("\n(+)MOTOR CTR");
+#else
+    debugSerial<<F("\n(-)MOTOR CTR");
+#endif
+#ifndef SPILED_DISABLE
+    debugSerial<<F("\n(+)SPI LED");
+#else
+    debugSerial<<F("\n(-)SPI LED");
+#endif
+#ifndef FASTLED
+    debugSerial<<F("\n(+)FASTLED");
+#else
+    debugSerial<<F("\n(+)ADAFRUIT LED");
+#endif
 debugSerial<<endl;
 
 
@@ -1601,6 +1639,7 @@ for (short i = 0; i < 6; i++) {
         mac[i] = EEPROM.read(i);
         if (mac[i] != 0 && mac[i] != 0xff) isMacValid = true;
     }
+
 if (!isMacValid) {
     debugSerial<<F("No MAC configured: set firmware's MAC\n");
 
@@ -1648,6 +1687,10 @@ void setupCmdArduino() {
 }
 
 void loop_main() {
+  #if defined(OTA)
+  ArduinoOTA.poll();
+  #endif
+
   #if defined(M5STACK)
    // Initialize the M5Stack object
    M5.update();
@@ -1780,16 +1823,34 @@ void inputSetup(void) {
         }
 }
 
-//#ifndef MODBUS_DISABLE
+
 void pollingLoop(void) {
+// FAST POLLINT - as often AS possible every item
+if (items) {
+    aJsonObject * item = items->child;
+    while (items && item)
+        if (item->type == aJson_Array && aJson.getArraySize(item)>1) {
+            Item it(item);
+            if (it.isValid()) {
+              it.Poll(POLLING_FAST);
+            } //isValid
+            item = item->next;
+        }  //if
+}
+
+// SLOW POLLING
     boolean done = false;
     if (lanStatus == RETAINING_COLLECTING) return;
     if (millis() > nextPollingCheck) {
         while (pollingItem && !done) {
             if (pollingItem->type == aJson_Array) {
                 Item it(pollingItem);
-                nextPollingCheck = millis() + it.Poll();    //INTERVAL_CHECK_MODBUS;
-                done = true;
+                uint32_t ret = it.Poll(POLLING_SLOW);
+                if (ret)
+                {
+                  nextPollingCheck = millis() +  ret;  //INTERVAL_CHECK_MODBUS;
+                  done = true;
+                }
             }//if
             pollingItem = pollingItem->next;
             if (!pollingItem) {
@@ -1799,7 +1860,6 @@ void pollingLoop(void) {
         } //while
     }//if
 }
-//#endif
 
 bool isThermostatWithMinArraySize(aJsonObject *item, int minimalArraySize) {
     return (item->type == aJson_Array) && (aJson.getArrayItem(item, I_TYPE)->valueint == CH_THERMO) &&
