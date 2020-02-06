@@ -157,6 +157,7 @@ aJsonObject *pollingItem = NULL;
 bool owReady = false;
 bool configOk = false;
 int8_t ethernetIdleCount =0;
+int8_t configLocked = 0;
 
 #ifdef _modbus
 ModbusMaster node;
@@ -182,6 +183,24 @@ void watchdogSetup(void) {}    //Do not remove - strong re-definition WDT Init f
 void cleanConf()
 {
   if (!root) return;
+debugSerial<<F("Unlocking config ...");
+while (configLocked)
+{
+          //wdt_res();
+          cmdPoll();
+          #ifdef _owire
+          if (owReady && owArr) owLoop();
+          #endif
+          #ifdef _dmxin
+          DMXCheck();
+          #endif
+          if (lanStatus != RETAINING_COLLECTING) pollingLoop();
+          thermoLoop();
+          inputLoop();
+}
+
+pollingItem = NULL;;
+
 debugSerial<<F("Deleting conf. RAM was:")<<freeRam();
     aJson.deleteItem(root);
     root   = NULL;
@@ -309,11 +328,8 @@ lan_status lanLoop() {
             break;
 
         case HAVE_IP_ADDRESS:
-        #ifdef OTA
-        // start the OTEthernet library with internal (flash) based storage
-        ArduinoOTA.begin(Ethernet.localIP(), "Lighthub", "password", InternalStorage);
-        #endif
 
+            if (configLocked) return HAVE_IP_ADDRESS;
             if (!configOk)
                 lanStatus = loadConfigFromHttp(0, NULL);
             else lanStatus = IP_READY_CONFIG_LOADED_CONNECTING_TO_BROKER;
@@ -457,7 +473,7 @@ void onMQTTConnect(){
   strncat_P(topic, homie_P, sizeof(topic));
   strncpy_P(buf, homiever_P, sizeof(buf));
   mqttClient.publish(topic,buf,true);
-
+  configLocked++;
   if (items) {
     char datatype[32]="\0";
     char format [64]="\0";
@@ -519,8 +535,32 @@ void onMQTTConnect(){
           strncat_P(topic, nodes_P, sizeof(topic));
     ///      mqttClient.publish(topic,buf,true);
   }
+configLocked--;
 #endif
 }
+
+char* getStringFromConfig(aJsonObject * a, int i)
+{
+aJsonObject * element = NULL;
+if (!a) return NULL;
+if (a->type == aJson_Array)
+  element = aJson.getArrayItem(a, i);
+// TODO - human readable JSON objects as alias
+
+  if (element && element->type == aJson_String) return element->valuestring;
+  return NULL;
+}
+
+char* getStringFromConfig(aJsonObject * a, char * name)
+{
+aJsonObject * element = NULL;
+if (!a) return NULL;
+if (a->type == aJson_Object)
+  element = aJson.getObjectItem(a, name);
+  if (element && element->type == aJson_String) return element->valuestring;
+  return NULL;
+}
+
 
 void ip_ready_config_loaded_connecting_to_broker() {
     short n = 0;
@@ -533,14 +573,14 @@ void ip_ready_config_loaded_connecting_to_broker() {
     char syslogDeviceHostname[16];
     if (mqttArr && (aJson.getArraySize(mqttArr)))
       {
-                deviceName = aJson.getArrayItem(mqttArr, 0)->valuestring;
+                deviceName = getStringFromConfig(mqttArr, 0);
                 debugSerial<<F("Device Name:")<<deviceName<<endl;
               }
 #ifdef SYSLOG_ENABLE
     //debugSerial<<"debugSerial:";
     delay(100);
     if (udpSyslogArr && (n = aJson.getArraySize(udpSyslogArr))) {
-      char *syslogServer = aJson.getArrayItem(udpSyslogArr, 0)->valuestring;
+      char *syslogServer = getStringFromConfig(udpSyslogArr, 0);
       if (n>1) syslogPort = aJson.getArrayItem(udpSyslogArr, 1)->valueint;
 
        inet_ntoa_r(Ethernet.localIP(),syslogDeviceHostname,sizeof(syslogDeviceHostname));
@@ -560,11 +600,11 @@ void ip_ready_config_loaded_connecting_to_broker() {
 
     if (!mqttClient.connected() && mqttArr && ((n = aJson.getArraySize(mqttArr)) > 1)) {
     //    char *client_id = aJson.getArrayItem(mqttArr, 0)->valuestring;
-        char *servername = aJson.getArrayItem(mqttArr, 1)->valuestring;
+        char *servername = getStringFromConfig(mqttArr, 1);
         if (n >= 3) port = aJson.getArrayItem(mqttArr, 2)->valueint;
-        if (n >= 4) user = aJson.getArrayItem(mqttArr, 3)->valuestring;
+        if (n >= 4) user = getStringFromConfig(mqttArr, 3);
         if (!loadFlash(OFFSET_MQTT_PWD, passwordBuf, sizeof(passwordBuf)) && (n >= 5)) {
-            password = aJson.getArrayItem(mqttArr, 4)->valuestring;
+            password = getStringFromConfig(mqttArr, 4);
             debugSerial<<F("Using MQTT password from config");
         }
 
@@ -697,6 +737,10 @@ wifiManager.setTimeout(30);
     if (WiFi.status() == WL_CONNECTED) {
         debugSerial<<F("WiFi connected. IP address: ")<<WiFi.localIP()<<endl;
         lanStatus = HAVE_IP_ADDRESS;//1;
+#ifdef OTA
+        // start the OTEthernet library with internal (flash) based storage
+        ArduinoOTA.begin(Ethernet.localIP(), "Lighthub", "password", InternalStorage);
+#endif
     } else
     {
         debugSerial<<F("Problem with WiFi!");
@@ -731,6 +775,10 @@ wifiManager.setTimeout(30);
         } else Ethernet.begin(mac, ip);
     debugSerial<<endl;
     lanStatus = HAVE_IP_ADDRESS;
+    #ifdef OTA
+    // start the OTEthernet library with internal (flash) based storage
+    ArduinoOTA.begin(Ethernet.localIP(), "Lighthub", "password", InternalStorage);
+    #endif
     #ifdef _artnet
                 if (artnet) artnet->begin();
     #endif
@@ -759,6 +807,10 @@ wifiManager.setTimeout(30);
         debugSerial<<F("Got IP address:");
         printIPAddress(Ethernet.localIP());
         lanStatus = HAVE_IP_ADDRESS;//1;
+        #ifdef OTA
+        // start the OTEthernet library with internal (flash) based storage
+        ArduinoOTA.begin(Ethernet.localIP(), "Lighthub", "password", InternalStorage);
+        #endif
         #ifdef _artnet
                     if (artnet) artnet->begin();
         #endif
@@ -797,7 +849,7 @@ void Changed(int i, DeviceAddress addr, float currentTemp) {
     debugSerial<<endl<<F("T:")<<valstr<<F("<");
     aJsonObject *owObj = aJson.getObjectItem(owArr, addrstr);
     if (owObj) {
-        owEmitString = aJson.getObjectItem(owObj, "emit")->valuestring;
+        owEmitString = getStringFromConfig(owObj, "emit");
         debugSerial<<owEmitString<<F(">")<<endl;
           if ((currentTemp != -127.0) && (currentTemp != 85.0) && (currentTemp != 0.0))
           {
@@ -806,7 +858,7 @@ void Changed(int i, DeviceAddress addr, float currentTemp) {
 
 #ifdef WITH_DOMOTICZ
             aJsonObject *idx = aJson.getObjectItem(owObj, "idx");
-        if (idx && idx->valuestring) {//DOMOTICZ json format support
+        if (idx && && idx->type ==aJson_String && idx->valuestring) {//DOMOTICZ json format support
             debugSerial << endl << idx->valuestring << F(" Domoticz valstr:");
             char valstr[50];
             sprintf(valstr, "{\"idx\":%s,\"svalue\":\"%.1f\"}", idx->valuestring, currentTemp);
@@ -824,7 +876,7 @@ void Changed(int i, DeviceAddress addr, float currentTemp) {
                   mqttClient.publish(addrstr, valstr);
         }
         // And translate temp to internal items
-        owItem = aJson.getObjectItem(owObj, "item")->valuestring;
+        owItem = getStringFromConfig(owObj, "item");
         if (owItem)
             thermoSetCurTemp(owItem, currentTemp);  ///TODO: Refactore using Items interface
         } // if valid temperature
@@ -876,6 +928,7 @@ void cmdFunctionReboot(int arg_cnt, char **args) {
 
 void applyConfig() {
     if (!root) return;
+configLocked++;
 #ifdef _dmxin
     int itemsCount;
     dmxArr = aJson.getObjectItem(root, "dmxin");
@@ -886,9 +939,10 @@ void applyConfig() {
 #endif
 #ifdef _dmxout
     int maxChannels;
+    short numParams;
     aJsonObject *dmxoutArr = aJson.getObjectItem(root, "dmx");
-    if (dmxoutArr && aJson.getArraySize(dmxoutArr) >=1 ) {
-        DMXoutSetup(maxChannels = aJson.getArrayItem(dmxoutArr, 1)->valueint);
+    if (dmxoutArr &&  (numParams=aJson.getArraySize(dmxoutArr)) >=1 ) {
+        DMXoutSetup(maxChannels = aJson.getArrayItem(dmxoutArr, numParams-1)->valueint);
         debugSerial<<F("DMX out started. Channels: ")<<maxChannels<<endl;
     }
 #endif
@@ -903,6 +957,7 @@ void applyConfig() {
         owReady = owSetup(&Changed);
         if (owReady) debugSerial<<F("One wire Ready\n");
         t_count = 0;
+
         while (item && owReady) {
             if ((item->type == aJson_Object)) {
                 DeviceAddress addr;
@@ -962,6 +1017,8 @@ void applyConfig() {
     udpSyslogArr = aJson.getObjectItem(root, "syslog");
 #endif
     printConfigSummary();
+
+configLocked--;
 }
 
 void printConfigSummary() {
@@ -1183,7 +1240,8 @@ void cmdFunctionPwd(int arg_cnt, char **args)
 }
 
 void cmdFunctionSetMac(int arg_cnt, char **args) {
-    if (sscanf(args[1], "%x:%x:%x:%x:%x:%x%c", &mac[0], &mac[1], &mac[2], &mac[3], &mac[4], &mac[5]) < 6) {
+    char dummy;
+    if (sscanf(args[1], "%x:%x:%x:%x:%x:%x%c", &mac[0], &mac[1], &mac[2], &mac[3], &mac[4], &mac[5], &dummy) < 6) {
         debugSerial<<F("could not parse: ")<<args[1];
         return;
     }
@@ -1715,9 +1773,9 @@ void loop_main() {
 #endif
 
     if (items) {
-        #ifndef MODBUS_DISABLE
+//        #ifndef MODBUS_DISABLE
         if (lanStatus != RETAINING_COLLECTING) pollingLoop();
-        #endif
+//        #endif
 //#ifdef _owire
         thermoLoop();
 //#endif
@@ -1783,9 +1841,10 @@ void modbusIdle(void) {
 void inputLoop(void) {
     if (!inputs) return;
 
-
+configLocked++;
     if (millis() > nextInputCheck) {
         aJsonObject *input = inputs->child;
+
         while (input) {
             if ((input->type == aJson_Object)) {
                 Input in(input);
@@ -1807,12 +1866,12 @@ void inputLoop(void) {
         }
         nextSensorCheck = millis() + INTERVAL_CHECK_SENSOR;
     }
-
+configLocked--;
 }
 
 void inputSetup(void) {
     if (!inputs) return;
-
+configLocked++;
         aJsonObject *input = inputs->child;
         while (input) {
             if ((input->type == aJson_Object)) {
@@ -1821,11 +1880,13 @@ void inputSetup(void) {
             }
             input = input->next;
         }
+configLocked--;
 }
 
 
 void pollingLoop(void) {
 // FAST POLLINT - as often AS possible every item
+configLocked++;
 if (items) {
     aJsonObject * item = items->child;
     while (items && item)
@@ -1837,7 +1898,7 @@ if (items) {
             item = item->next;
         }  //if
 }
-
+configLocked--;
 // SLOW POLLING
     boolean done = false;
     if (lanStatus == RETAINING_COLLECTING) return;
@@ -1852,6 +1913,7 @@ if (items) {
                   done = true;
                 }
             }//if
+            if (!pollingItem) return; //Config was re-readed
             pollingItem = pollingItem->next;
             if (!pollingItem) {
                 pollingItem = items->child;
@@ -1885,6 +1947,7 @@ void thermoLoop(void) {
         return;
     if (!items) return;
     bool thermostatCheckPrinted = false;
+   configLocked++;
     for (aJsonObject *thermoItem = items->child; thermoItem; thermoItem = thermoItem->next) {
         if (isThermostatWithMinArraySize(thermoItem, 5)) {
             aJsonObject *thermoExtensionArray = aJson.getArrayItem(thermoItem, I_EXT);
@@ -1928,7 +1991,7 @@ void thermoLoop(void) {
             }
         }
     }
-
+  configLocked--;
     nextThermostatCheck = millis() + THERMOSTAT_CHECK_PERIOD;
 publishStat();
 #ifndef DISABLE_FREERAM_PRINT

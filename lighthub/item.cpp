@@ -23,6 +23,7 @@ e-mail    anklimov@gmail.com
 #include "aJSON.h"
 #include "utils.h"
 #include "textconst.h"
+#include "main.h"
 
 #ifdef _dmxout
 #include "dmx.h"
@@ -46,6 +47,8 @@ short modbusBusy = 0;
 extern aJsonObject *pollingItem;
 extern PubSubClient mqttClient;
 extern int8_t ethernetIdleCount;
+extern int8_t configLocked;
+extern lan_status lanStatus;
 
 static unsigned long lastctrl = 0;
 static aJsonObject *lastobj = NULL;
@@ -186,7 +189,7 @@ Item::Item(char *name) //Constructor
     {   char* sub;
         if (sub=strchr(name,'/'))
         {
-        char  buf [MQTT_SUBJECT_LENGTH];
+        char  buf [MQTT_SUBJECT_LENGTH+1];
         short i;
         for(i=0;(name[i] && (name[i]!='/') && (i<MQTT_SUBJECT_LENGTH));i++)
             buf[i]=name[i];
@@ -663,7 +666,7 @@ int Item::Ctrl(short cmd, short n, int *Parameters, boolean send, int suffixCode
                                st.h = Par[0];
                                Par[1] = st.s;
                                Par[2] = st.v;
-                               
+
                                n=3;
                                setVal(st.aslong);
                              }
@@ -1020,11 +1023,16 @@ int Item::Ctrl(short cmd, short n, int *Parameters, boolean send, int suffixCode
         {
             if (itemArg->type == aJson_Array) {
                 aJsonObject *i = itemArg->child;
+                configLocked++;
                 while (i) {
-                    Item it(i->valuestring);
-                    it.Ctrl(cmd, n, Par, send,suffixCode,subItem); //// was true
+                    if (i->type == aJson_String)
+                      {
+                      Item it(i->valuestring);
+                      it.Ctrl(cmd, n, Par, send,suffixCode,subItem); //// was true
+                      }
                     i = i->next;
                 } //while
+                configLocked--;
             } //if
         } //case
             break;
@@ -1142,11 +1150,14 @@ int Item::isActive() {
                 debugSerial<<F(" Grp:");
                 aJsonObject *i = itemArg->child;
                 while (i) {
-                    Item it(i->valuestring);
+                    if (i->type == aJson_String)
+                    {
+                        Item it(i->valuestring);
 
-                    if (it.isValid() && it.isActive()>0) {
-                        debugSerial<<F(" active\n");
-                        return 1;
+                        if (it.isValid() && it.isActive()>0) {
+                            debugSerial<<F(" active\n");
+                            return 1;
+                        }
                     }
                     i = i->next;
                 } //while
@@ -1319,6 +1330,7 @@ int Item::VacomSetFan(int8_t val, int8_t cmd) {
 int Item::VacomSetHeat(int8_t val, int8_t cmd) {
     uint8_t result;
     int addr;
+    if (itemArg->type != aJson_String) return 0;
 
     Item it(itemArg->valuestring);
     if (it.isValid() && it.itemType == CH_VC) addr=it.getArg();
@@ -1448,7 +1460,7 @@ int Item::checkFM() {
         aJson.addNumberToObject(out, "sw", (int) node.getResponseBuffer(0));
         if (RPM && itemArg->type == aJson_Array) {
             aJsonObject *airGateObj = aJson.getArrayItem(itemArg, 1);
-            if (airGateObj) {
+            if (airGateObj && airGateObj->type == aJson_String) {
                 int val = 100;
                 Item item(airGateObj->valuestring);
                 if (item.isValid())
@@ -1692,7 +1704,7 @@ switch (cause)
 void Item::sendDelayedStatus()
 { long int flags = getFlag(SEND_COMMAND | SEND_PARAMETERS);
 //  debugSerial<<flags<<F(" Delayed Status ")<<itemArr->name<<endl;
-      if (flags)
+      if (flags && lanStatus==OPERATION)
       {
       SendStatus(SEND_COMMAND | SEND_PARAMETERS);
       clearFlag(SEND_COMMAND | SEND_PARAMETERS);
@@ -1702,7 +1714,7 @@ void Item::sendDelayedStatus()
 #endif
 int Item::SendStatus(int sendFlags) {
     int chancmd=getCmd();
-    if (sendFlags & SEND_DEFFERED) {
+    if ((sendFlags & SEND_DEFFERED) || (lanStatus==RETAINING_COLLECTING)) {
         setFlag(sendFlags & (SEND_COMMAND | SEND_PARAMETERS));
         debugSerial<<F("Status deffered\n");
         return -1;
